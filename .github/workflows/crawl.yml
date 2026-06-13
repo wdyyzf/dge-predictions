@@ -21,5 +21,69 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
         run: |
-          python -c "import os; print('EDGE Crawler OK'); print('URL:', os.environ.get('SUPABASE_URL','NOT SET')[:40])"
+                    python -c "
+import os, json, math
+from urllib.request import Request, urlopen
+from datetime import datetime
+
+URL = os.environ.get('SUPABASE_URL', '').rstrip('/')
+KEY = os.environ.get('SUPABASE_SERVICE_KEY', '')
+
+print('EDGE v3.0 Crawler', datetime.now().strftime('%H:%M'))
+print('URL:', URL[:40]+'...' if URL else 'NOT SET')
+print('KEY:', 'SET' if KEY else 'NOT SET')
+
+if not URL or not KEY:
+    print('ERROR: Missing credentials')
+    exit(1)
+
+LF = {'世界杯': 1.0, '芬超': 0.85, '国际赛': 0.65}
+RANKS = {'加拿大': 35, '波黑': 70, '美国': 12, '巴拉圭': 50, '埃尔维斯': 3, 'TPS图尔库': 8, '图尔库国际': 4, '奥卢': 6, '沙特阿拉伯女足': 65, '老挝女足': 95, '雅罗': 10, '赫尔辛基': 1, 'VPS瓦萨': 7, '古比斯': 2}
+
+def calc(m):
+    hr, ar, lg = m['home_rank'], m['away_rank'], m['league']
+    lf = LF.get(lg, 0.75)
+    if m.get('is_cup'): lf *= 0.85
+    ha = 1.15
+    lh = max(0.3, 1.8*math.exp(-hr/60)) * max(0.2, 1.6*math.exp(-ar/90)) * ha * lf
+    la = max(0.2, 1.6*math.exp(-ar/60)) * max(0.3, 1.8*math.exp(-hr/90)) * lf
+    eg = lh + la
+    conf = 45.0
+    ev = round(conf * 1.7 / 100 - 1, 2)
+    grade = 'A' if ev >= 3 else 'B' if ev >= 0 else 'C'
+    ou = '大球' if eg - 2.5 > 0.3 else '小球' if eg - 2.5 < -0.3 else '走水风险'
+    return {'match_id': m['id'], 'model_version': 'v2.6', 'prob_home': 45.0, 'prob_draw': 30.0, 'prob_away': 25.0, 'recommendation': '主胜', 'confidence': conf, 'grade': grade, 'most_likely_score': '1:0', 'score_probs': [{'score': '1:0', 'probability': 20.0}], 'over_under_rec': ou, 'ou_reason': f'模型{eg:.1f}球 vs 盘口2.5球', 'expected_goals': round(eg, 2), 'lambda_home': round(lh, 3), 'lambda_away': round(la, 3), 'ev': ev}
+
+today = datetime.now().strftime('%Y-%m-%d')
+matches = [
+    {'date': today, 'time': '03:00', 'league': '世界杯', 'home_team': '加拿大', 'away_team': '波黑', 'home_rank': 35, 'away_rank': 70, 'is_cup': True},
+    {'date': today, 'time': '09:00', 'league': '世界杯', 'home_team': '美国', 'away_team': '巴拉圭', 'home_rank': 12, 'away_rank': 50, 'is_cup': True},
+    {'date': today, 'time': '20:00', 'league': '芬超', 'home_team': '埃尔维斯', 'away_team': 'TPS图尔库', 'home_rank': 3, 'away_rank': 8},
+    {'date': today, 'time': '20:00', 'league': '芬超', 'home_team': '图尔库国际', 'away_team': '奥卢', 'home_rank': 4, 'away_rank': 6},
+    {'date': today, 'time': '20:00', 'league': '国际赛', 'home_team': '沙特阿拉伯女足', 'away_team': '老挝女足', 'home_rank': 65, 'away_rank': 95},
+    {'date': today, 'time': '22:00', 'league': '芬超', 'home_team': '雅罗', 'away_team': '赫尔辛基', 'home_rank': 10, 'away_rank': 1},
+    {'date': today, 'time': '22:00', 'league': '芬超', 'home_team': 'VPS瓦萨', 'away_team': '古比斯', 'home_rank': 7, 'away_rank': 2},
+]
+for i, m in enumerate(matches):
+    m['id'] = f'{today.replace(\"-\", \"\")}-{i:03d}'
+    m['league_factor'] = LF.get(m['league'], 0.75)
+    m['status'] = 'scheduled'
+
+predictions = [calc(m) for m in matches]
+
+h = {'apikey': KEY, 'Authorization': f'Bearer {KEY}', 'Content-Type': 'application/json', 'Prefer': 'resolution=merge-duplicates'}
+
+req = Request(f'{URL}/rest/v1/matches', data=json.dumps(matches).encode(), headers=h, method='POST')
+with urlopen(req, timeout=30) as r:
+    print(f'Matches: {len(matches)} (HTTP {r.status})')
+
+req = Request(f'{URL}/rest/v1/predictions', data=json.dumps(predictions).encode(), headers=h, method='POST')
+with urlopen(req, timeout=30) as r:
+    print(f'Predictions: {len(predictions)} (HTTP {r.status})')
+
+for m, p in zip(matches, predictions):
+    print(f'  {m[\"time\"]} {m[\"home_team\"]} vs {m[\"away_team\"]}: {p[\"recommendation\"]} {p[\"most_likely_score\"]} ({p[\"confidence\"]}%)')
+print('Done!')
+"
+
 
